@@ -15,3 +15,6 @@ usage.jsonl
 *.bak.*
 *_old*
 *.orig
+
+# macOS resource forks
+._*

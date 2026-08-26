@@ -1,0 +1,15 @@
+[Unit]
+Description=Lark WS listener — agent-bridge (Agent SDK execution, streaming card replies)
+After=default.target
+Wants=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/ai-platform/services/agent-bridge/start-lark.sh
+Restart=on-failure
+RestartSec=10
+# Billing safety: these must never inherit into the SDK subprocess
+UnsetEnvironment=CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+
+[Install]
+WantedBy=default.target
