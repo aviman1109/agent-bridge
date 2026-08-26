@@ -1,0 +1,17 @@
+# deployment-specific / secrets — never commit
+.env
+guest-policy.json
+local/
+
+# runtime
+.venv/
+__pycache__/
+*.pyc
+*.log
+usage.jsonl
+
+# editor / backup residue (git-as-record: git is the backup)
+*.bak
+*.bak.*
+*_old*
+*.orig
