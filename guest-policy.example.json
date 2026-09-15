@@ -1,11 +1,25 @@
 {
-  "_comment": "Guest sandbox policy — copy to guest-policy.json (gitignored) and tailor. The deny list and prompt describe YOUR sensitive files, so the real file must never be committed. Missing file = guest role disabled (fail-closed).",
+  "_comment": "Guest sandbox policy — copy to guest-policy.json (gitignored) and tailor. allow/deny 清單描述你有哪些敏感檔，真檔永遠不進 git。allow_patterns 非空 = 白名單語意（沒列到的路徑一律 deny，日後新增目錄預設不外流）；留空則沿用舊的純黑名單語意。",
+  "cwd": "~/workspaces/mywork/customer/<單一客戶>",
   "read_roots": [
-    "~/workspaces/mywork",
+    "~/workspaces/mywork/customer/<單一客戶>",
     "~/.cache/telegram-listener/files",
     "/tmp"
   ],
+  "allow_patterns": [
+    "customer/<單一客戶>/STATUS.md",
+    "customer/<單一客戶>/TIMELINE.md",
+    "customer/<單一客戶>/events/*.md",
+    "customer/<單一客戶>/deliverables/**"
+  ],
   "deny_patterns": [
+    "*billing*",
+    "*invoice*",
+    "*contract*",
+    "*pricing*",
+    "*negotiation*",
+    "customer/<單一客戶>/meetings/**",
+    "customer/<單一客戶>/zoom-transcripts/**",
     "secrets/*",
     "secrets/**",
     ".env",
@@ -18,8 +32,7 @@
     "*.pdf",
     "**/*.xlsx",
     "*.xlsx",
-    "path/to/your/compensation-files*",
-    "path/to/your/contract-files/*"
+    "path/to/your/compensation-files*"
   ],
-  "system_prompt": "你是 <bot 名> 的「訪客助理」— owner 開放給群組成員的 read-only 分身。\n\n## 你能看到什麼\n你站在 <workspace 路徑>，可用 Read / Grep / Glob 讀取：<列出開放的檔案類型>。也能用 WebSearch / WebFetch 查公開網頁。\n\n## 你絕對不能碰\n<描述被 hook deny 的範圍>。被擋掉時禮貌告知「這是機密不能看」，別繞路嘗試。\n\n## 工具\n只有 Read / Grep / Glob / WebSearch / WebFetch — read-only。\n\n## 回覆風格\n精簡、有結構、直接給結論。你的輸出由 bridge 即時轉貼到 IM，不要自行呼叫任何訊息工具。\n\n## 邊界\n別代 owner 承諾任何事；有疑慮就建議直接找 owner。"
+  "system_prompt": "你是 <bot 名> 的「訪客助理」— owner 開放給群組成員的 read-only 分身，服務對象是 <某合作方>。\n\n## 你的唯一職責\n只回答 <單一主題 / 單一客戶> 的技術脈絡。你不是 owner 本人，不代他承諾任何事。\n\n## 硬邊界（以下一律不回答，直接請對方找 owner）\n1. 內部管理 / 人事（內部群訊息、主管指示、稽核數字、人員異動）\n2. 商務 / 金額（合約、報價、帳單、折扣、佣金）\n3. 其他客戶的任何狀況\n4. owner 與同事的個人行程、私事、八卦\n5. 尚未對外說明的內部判斷、風險預判、保留意見\n6. **逐字引用**任何內部訊息 / 會議 / 主管發言——就算檔案裡有，也只能改寫成對客戶的技術影響\n\n## 回答方式\n只回具體問題；不做「最近有什麼大事」這種全景式匯報。結論先行、精簡、bullet。找不到就說找不到。輸出由 bridge 即時轉貼到 IM，不要自行呼叫任何訊息工具。\n\n## 工具與可讀範圍\n只有 Read / Glob / WebSearch / WebFetch — read-only（**刻意不給 Grep**：hook 只檢查 path 參數，Grep 回傳的是命中檔案的內容，會繞過逐檔白名單）。可讀範圍 = allow_patterns 明列的路徑；其餘被 hook 直接 deny，被擋到就換題，別繞路試。\n\n## 有疑慮時\n一律保守：寧可說「這部分請直接問 owner」。\n"
 }

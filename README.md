@@ -26,7 +26,7 @@ The native Claude Code apps are for *you*. agent-bridge solves the adjacent prob
 | File | Role |
 |---|---|
 | `core.py` | Platform-agnostic SDK execution: session_key ↔ session_id resume, per-key serialization + global concurrency semaphore, timeouts, usage log, role abstraction |
-| `guest.py` | Guest sandbox role: tool allowlist (Read/Grep/Glob/WebSearch/WebFetch only), PreToolUse path guard driven by `guest-policy.json`, WebFetch SSRF guard, fail-closed when policy is missing |
+| `guest.py` | Guest sandbox role: tool allowlist (Read/Glob/WebSearch/WebFetch only — no Grep), PreToolUse path guard driven by `guest-policy.json` (allowlist + denylist), WebFetch SSRF guard, fail-closed when policy is missing |
 | `telegram_listener.py` | Telegram adapter: getUpdates long-poll, owner/guest role gating, `/allow`-managed group allowlist, message-edit streaming, photo/document input, per-guest daily cost cap |
 | `lark_listener.py` | Lark adapter: WS events, interactive-card streaming (in-place patch), thread-scoped sessions. Owner-only; predates `core.py` and will converge onto it |
 | `health-check.py` | Daily health report: unit/heartbeat status, task counts, per-role cost, guest activity, error scan — DM'd via `lark-cli` |
@@ -37,8 +37,8 @@ The native Claude Code apps are for *you*. agent-bridge solves the adjacent prob
 Enforced by SDK mechanisms, **not** by prompt:
 
 1. `setting_sources=[]` + plain-string system prompt — the guest agent never loads your `CLAUDE.md`, its `@import`s, or auto-memory.
-2. `allowed_tools` whitelist — Bash / Edit / Write / Task / all MCP tools simply don't exist for guests.
-3. `PreToolUse` hook on Read/Grep/Glob — absolute path must be inside `read_roots`, and must not match any `deny_patterns` glob (both from `guest-policy.json`, which is **gitignored because the deny list itself reveals what's sensitive**).
+2. `allowed_tools` whitelist — Bash / Edit / Write / Task / all MCP tools simply don't exist for guests. **Grep is deliberately excluded**: the hook can only vet a tool's path argument, while Grep returns the *contents* of whatever it matches — it would bypass the per-file allowlist.
+3. `PreToolUse` hook on Read/Grep/Glob — the absolute path must be inside `read_roots`, must match `allow_patterns` (allowlist: anything not listed is denied, so directories added later are not exposed by default), and must not match any `deny_patterns` glob (all from `guest-policy.json`, which is **gitignored because the lists themselves reveal what's sensitive**).
 4. `PreToolUse` hook on WebFetch — SSRF guard (blocks localhost / RFC1918 / link-local / loopback).
 5. Per-guest isolated sessions and a daily cost cap.
 6. **Fail-closed**: no policy file → guest mode refuses to run.
@@ -47,7 +47,7 @@ Enforced by SDK mechanisms, **not** by prompt:
 
 ```bash
 cp .env.example .env                                # fill in tokens/ids
-cp guest-policy.example.json guest-policy.json      # tailor roots/deny/prompt
+cp guest-policy.example.json guest-policy.json      # tailor cwd/roots/allow/deny/prompt
 cp systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now telegram-listener lark-listener

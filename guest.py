@@ -9,12 +9,14 @@
      機密數字），也避開 auto-memory
   2. 自帶 system prompt — 告知訪客 role 與可讀範圍，不用 Claude Code preset（不會被
      work workspace 的 project settings 灌爆）
-  3. `allowed_tools` 白名單 — 只放 Read / Grep / Glob / WebSearch / WebFetch；Bash /
-     Edit / Write / Task / Agent / 所有 MCP 因不在白名單 → 完全不存在
+  3. `allowed_tools` 白名單 — 只放 Read / Glob / WebSearch / WebFetch；Bash / Edit /
+     Write / Task / Agent / 所有 MCP 因不在白名單 → 完全不存在。**Grep 刻意不給**：
+     hook 只檢查 path 參數，Grep 回傳的是命中檔案的內容，等於繞過逐檔白名單。
   4. PreToolUse hook 對 Read / Grep / Glob 三個檔案類工具：
-     - 絕對路徑必須在 ALLOW_ROOTS 內（work workspace / uploads / /tmp）
-     - 且**路徑不匹配任何 DENY_PATTERN**（照 .gitignore + CLAUDE.md「絕對不能 commit」
-       + 商業敏感）
+     - 絕對路徑必須在 ALLOW_ROOTS 內（policy read_roots）
+     - workspace 內還要**命中 ALLOW_PATTERN**（白名單語意：沒明列 = 讀不到，
+       日後新增的目錄預設不外流）
+     - 且**不匹配任何 DENY_PATTERN**（秘密 / 財務 / 合約 / 商務關鍵字二道防線）
   5. PreToolUse hook 對 WebFetch：SSRF 阻擋（localhost/RFC1918/link-local/loopback）
 
 每位訪客 session_key = `tg:{chat}:guest:{sender_id}` 獨立、每日 cost cap（可調）。
@@ -36,8 +38,8 @@ from core import CLAUDE_CONFIG_DIR, RoleContext, WORK_DIR
 
 log = logging.getLogger("agent-bridge.guest")
 
-# 訪客直接站在 owner workspace（read-only）
-GUEST_CWD = WORK_DIR
+# 訪客的落腳目錄（read-only）— 由 policy 的 cwd 決定，預設 owner workspace 根目錄。
+# 收斂後指到單一客戶目錄，訪客的相對路徑 / 預設 Glob 落點都落在可讀範圍內。
 # 共用 owner 的 CLAUDE_CONFIG_DIR 讓 OAuth 憑證繼承（同一 Anthropic 帳號計費）
 GUEST_CONFIG_DIR = CLAUDE_CONFIG_DIR
 
@@ -54,7 +56,9 @@ def _load_policy() -> dict | None:
         roots = tuple(Path(os.path.expanduser(p)).resolve()
                       for p in raw["read_roots"])
         return {
+            "cwd": os.path.expanduser(raw.get("cwd") or WORK_DIR),
             "read_roots": roots,
+            "allow_patterns": tuple(raw.get("allow_patterns", ())),
             "deny_patterns": tuple(raw["deny_patterns"]),
             "system_prompt": raw["system_prompt"],
         }
@@ -75,12 +79,16 @@ def guest_available() -> bool:
 
 
 # 載入後的 policy 內容（policy 缺失時給空值 — guest_role() 會先擋）
+GUEST_CWD: str = _POLICY["cwd"] if _POLICY else WORK_DIR
 GUEST_READ_ROOTS: tuple[Path, ...] = _POLICY["read_roots"] if _POLICY else ()
+# allow_patterns 非空 → 白名單語意：owner workspace 內只有明列的路徑讀得到，
+# 其餘一律 deny（新增的目錄預設不外流）。空 = 沿用舊的純黑名單語意。
+ALLOW_PATTERNS: tuple[str, ...] = _POLICY["allow_patterns"] if _POLICY else ("*",)
 DENY_PATTERNS: tuple[str, ...] = _POLICY["deny_patterns"] if _POLICY else ("*",)
 
 # 白名單：只有這些工具會被 SDK 放行使用
 GUEST_ALLOWED_TOOLS: list[str] = [
-    "Read", "Grep", "Glob", "WebSearch", "WebFetch",
+    "Read", "Glob", "WebSearch", "WebFetch",
 ]
 
 # 訪客 system prompt 由 guest-policy.json 提供（policy["system_prompt"]）——
@@ -117,9 +125,9 @@ def _deny(reason: str) -> dict:
     }
 
 
-def _matches_deny(rel_path: str) -> str | None:
+def _match_patterns(rel_path: str, patterns: tuple[str, ...]) -> str | None:
     """回傳匹配到的 pattern，或 None。fnmatch 語意（* 不跨 /）+ ** 自行處理。"""
-    for pat in DENY_PATTERNS:
+    for pat in patterns:
         if "**" in pat:
             # 拆掉 ** 對每個位置比對
             head, _, tail = pat.partition("**")
@@ -142,6 +150,32 @@ def _matches_deny(rel_path: str) -> str | None:
             if fnmatch.fnmatch(Path(rel_path).name, pat):
                 return pat
     return None
+
+
+def _matches_deny(rel_path: str) -> str | None:
+    return _match_patterns(rel_path, DENY_PATTERNS)
+
+
+def _static_prefix(pat: str) -> str:
+    """pattern 第一個萬用字元之前的固定路徑段（用來判斷「祖先目錄」）。"""
+    head = pat.split("*")[0].split("?")[0]
+    return head.rstrip("/").rpartition("/")[0] if not head.endswith("/") else head.rstrip("/")
+
+
+def _matches_allow(rel_path: str) -> bool:
+    """白名單：命中 pattern，或本身是某條 allow pattern 的祖先目錄（Glob 落腳點）。"""
+    if not ALLOW_PATTERNS:
+        return True
+    if _match_patterns(rel_path, ALLOW_PATTERNS):
+        return True
+    rel = rel_path.strip("/")
+    if rel in (".", ""):
+        return False
+    for pat in ALLOW_PATTERNS:
+        prefix = _static_prefix(pat)
+        if prefix and (prefix == rel or prefix.startswith(rel + "/")):
+            return True
+    return False
 
 
 def _abs_resolve(path_str: str) -> Path | None:
@@ -172,6 +206,11 @@ def _check_fs_path(path_str: str) -> dict:
     # 2. 若在 work workspace 內，還要過 DENY_PATTERN
     try:
         rel = str(abs_path.relative_to(Path(WORK_DIR).resolve()))
+        if not _matches_allow(rel):
+            return _deny(
+                f"這個路徑（{rel}）不在訪客可讀的白名單內。訪客只看得到 WG 技術脈絡；"
+                "內部管理、商務 / 金額、其他客戶、Casper 個人行程一律不開放 —— 請直接問 Casper。"
+            )
         matched = _matches_deny(rel)
         if matched:
             return _deny(
@@ -195,9 +234,9 @@ async def _pre_tool_use_fs_guard(
         p = inp.get("file_path", "")
     elif tool == "Grep":
         # Grep 有 path 參數（可選；預設 cwd）；也可能有多個 include 檔案
-        p = inp.get("path") or WORK_DIR
+        p = inp.get("path") or GUEST_CWD
     else:  # Glob
-        p = inp.get("path") or WORK_DIR
+        p = inp.get("path") or GUEST_CWD
     if not p:
         return {}
     return _check_fs_path(p)
